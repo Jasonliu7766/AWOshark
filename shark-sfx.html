@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小鲨音效台</title>
+<style>
+:root { --bg:#f4f5f7; --card:#fff; --ink:#1d2128; --muted:#6b7280; --line:#e3e6ea; --accent:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+@media (prefers-color-scheme: dark){ :root{ --bg:#0f1115; --card:#181b21; --ink:#e6e8eb; --muted:#9aa1ab; --line:#2a2f37; --accent:#3b82f6; } }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{font-size:17px;margin:0}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--bad);display:inline-block}
+.dot.on{background:var(--ok)}
+main{max-width:900px;margin:0 auto;padding:14px 16px;display:grid;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{font-size:15px;margin:0 0 10px}
+button{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
+.stat{background:var(--bg);border-radius:8px;padding:6px 9px}
+.stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:12px}
+label.sw{display:flex;align-items:center;gap:6px}
+.hint{color:var(--muted);font-size:12px;margin:4px 0}
+#log{height:150px;overflow:auto;background:var(--bg);border-radius:8px;padding:8px;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;margin:0}
+.fx{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.fx .cell{background:var(--bg);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.fx small{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🦈 小鲨音效台</h1>
+  <span class="dot" id="dot"></span><span id="conn">未连接</span>
+  <button class="primary" id="btnConnect">连接 ESP32</button>
+  <button id="btnDisconnect" disabled>断开</button>
+  <label class="sw"><input type="checkbox" id="sfxOn" checked> 自动音效</label>
+  <span class="hint" id="support"></span>
+</header>
+<main>
+  <section class="card">
+    <h2>实时状态 <span id="state" class="hint">--</span></h2>
+    <div class="stats">
+      <div class="stat"><b id="vAnger">--</b><span>怒气</span></div>
+      <div class="stat"><b id="vJaw">--</b><span>电机</span></div>
+      <div class="stat"><b id="vHand">--</b><span>嘴里有手</span></div>
+      <div class="stat"><b id="vLoud">--</b><span>响度 dB</span></div>
+      <div class="stat"><b id="vPet">--</b><span>摸头</span></div>
+      <div class="stat"><b id="vRem">--</b><span>剩余牙</span></div>
+    </div>
+  </section>
+  <section class="card">
+    <h2>音效（点按钮先试听）</h2>
+    <div class="fx" id="fxGrid"></div>
+    <p class="hint">勾选“自动音效”后：咬人→惨叫，拍手→回应，怒气满→警告，摸头→呼噜，连接→开机音。声音从电脑扬声器出，不改小鲨固件。</p>
+    <div class="row"><span class="hint">拍手判定：响度 ≥</span><input type="number" id="clapTh" value="8" min="2" max="40" style="width:60px"><span class="hint">dB</span>
+      <span class="hint">音量</span><input type="range" id="vol" min="0" max="100" value="70" style="flex:1;min-width:120px"><b id="volV">70</b></div>
+  </section>
+  <section class="card">
+    <h2>串口日志</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let port=null, writer=null, reader=null, closing=false;
+if(!('serial' in navigator)){ $('support').textContent='请用 Chrome / Edge 打开'; $('btnConnect').disabled=true; }
+
+function log(s){ const el=$('log'); el.textContent+=s+'\n'; if(el.textContent.length>20000) el.textContent=el.textContent.slice(-15000); el.scrollTop=el.scrollHeight; }
+function setConn(on){ $('dot').classList.toggle('on',on); $('conn').textContent=on?'已连接':'未连接'; $('btnConnect').disabled=on||!('serial' in navigator); $('btnDisconnect').disabled=!on; }
+
+async function connect(){
+  try{ port=await navigator.serial.requestPort(); await port.open({baudRate:115200}); }
+  catch(e){ log('连接失败：'+e.message); port=null; return; }
+  closing=false; writer=port.writable.getWriter(); setConn(true); readLoop();
+  if(audio) audio.resume();
+  setTimeout(async()=>{ await send('log off'); await send('tele on'); if($('sfxOn').checked) play('boot'); }, 300);
+}
+async function disconnect(){
+  if(closing) return; closing=true;
+  try{ await send('tele off'); await send('log all'); }catch(e){}
+  try{ reader&&await reader.cancel(); }catch(e){}
+  await new Promise(r=>setTimeout(r,50));
+  try{ writer&&writer.releaseLock(); }catch(e){}
+  try{ port&&await port.close(); }catch(e){}
+  port=writer=reader=null; setConn(false);
+}
+async function send(cmd){ if(!writer) return; await writer.write(new TextEncoder().encode(cmd+'\n')); }
+async function readLoop(){
+  const dec=new TextDecoder(); let buf='';
+  while(port&&port.readable&&!closing){
+    reader=port.readable.getReader();
+    try{ for(;;){ const {value,done}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true}); let i;
+      while((i=buf.indexOf('\n'))>=0){ onLine(buf.slice(0,i).replace(/\r$/,'')); buf=buf.slice(i+1); } } }
+    catch(e){ log('串口断开：'+e.message); break; }
+    finally{ reader.releaseLock(); }
+  }
+  if(port&&!closing) disconnect();
+}
+function onLine(line){
+  if(line.startsWith('[T] ')){ try{ onTele(JSON.parse(line.slice(4))); }catch(e){} return; }
+  if(line.includes('===== 暴躁小鲨')){ if($('sfxOn').checked) play('boot'); setTimeout(()=>send('tele on'),1500); }
+  log(line);
+}
+// ---------- Web Audio 合成（和 sfx.cpp 的音色一致）----------
+let audio=null, volScale=0.7;
+function ac(){ if(!audio) audio=new (window.AudioContext||window.webkitAudioContext)(); return audio; }
+function tone(t0,{f0,f1,ms,type='sine',vibHz=0,vibDepth=0,noise=0,amp=0.5}){
+  const a=ac(), dur=ms/1000, peak=amp*volScale;
+  const g=a.createGain(); g.connect(a.destination);
+  const atk=Math.min(0.008,dur*0.5), rel=dur*0.3;
+  g.gain.setValueAtTime(0,t0); g.gain.linearRampToValueAtTime(peak,t0+atk);
+  g.gain.setValueAtTime(peak,t0+dur-rel); g.gain.linearRampToValueAtTime(0,t0+dur);
+  const osc=a.createOscillator();
+  osc.type = type==='square'?'square':type==='saw'?'sawtooth':type==='tri'?'triangle':'sine';
+  osc.frequency.setValueAtTime(f0,t0); if(f1!==f0) osc.frequency.linearRampToValueAtTime(f1,t0+dur);
+  if(vibDepth>0){ const lfo=a.createOscillator(),lg=a.createGain(); lfo.frequency.value=vibHz; lg.gain.value=f0*vibDepth;
+    lfo.connect(lg); lg.connect(osc.frequency); lfo.start(t0); lfo.stop(t0+dur); }
+  osc.connect(g); osc.start(t0); osc.stop(t0+dur);
+  if(noise>0){ const n=Math.max(1,Math.floor(a.sampleRate*dur)), b=a.createBuffer(1,n,a.sampleRate), ch=b.getChannelData(0);
+    for(let i=0;i<n;i++) ch[i]=Math.random()*2-1;
+    const ns=a.createBufferSource(); ns.buffer=b; const ng=a.createGain();
+    ng.gain.setValueAtTime(peak*noise,t0); ng.gain.linearRampToValueAtTime(0,t0+dur);
+    ns.connect(ng); ng.connect(a.destination); ns.start(t0); ns.stop(t0+dur); }
+  return t0+dur;
+}
+function play(name){
+  const a=ac(); if(a.state==='suspended') a.resume();
+  let t=a.currentTime+0.01; const T=o=>{ t=tone(t,o); };
+  switch(name){
+    case 'boot':  T({f0:523,f1:523,ms:110,amp:.55}); T({f0:659,f1:659,ms:110,amp:.55});
+                  T({f0:784,f1:784,ms:120,amp:.6});  T({f0:1047,f1:1047,ms:160,amp:.65}); break;
+    case 'scream':T({f0:1250,f1:780,ms:110,type:'square',noise:.15,amp:.95});
+                  T({f0:840,f1:300,ms:280,type:'saw',vibHz:26,vibDepth:.3,noise:.35,amp:1}); break;
+    case 'clap':  T({f0:700,f1:1500,ms:80,amp:.6}); t+=0.045; T({f0:900,f1:1750,ms:70,amp:.55}); break;
+    case 'purr':  for(let k=0;k<3;k++) T({f0:95,f1:112,ms:190,type:'tri',vibHz:30,vibDepth:.06,amp:.5}); break;
+    case 'anger': for(let k=0;k<3;k++){ T({f0:1000,f1:1000,ms:110,type:'square',amp:.85});
+                  T({f0:1320,f1:1320,ms:110,type:'square',amp:.85}); } break;
+    case 'roar':  T({f0:150,f1:90,ms:520,type:'saw',vibHz:8,vibDepth:.25,noise:.3,amp:.98});
+                  T({f0:110,f1:70,ms:360,type:'saw',vibHz:6,vibDepth:.2,noise:.4,amp:.92}); break;
+  }
+}
+// ---------- 实时数据 -> 触发音效（边沿检测 + 冷却）----------
+let prev={st:'',an:0,pet:0,ld:0}, lastClap=0;
+function onTele(d){
+  $('state').textContent = d.st + (d.lk?' · 锁':'');
+  $('vAnger').textContent = (d.an||0).toFixed(0);
+  $('vJaw').textContent   = d.jaw!=null?d.jaw:'--';
+  $('vHand').textContent  = d.hand?'有':'无';
+  $('vLoud').textContent  = (d.ld||0).toFixed(1);
+  $('vPet').textContent   = (d.pet||0).toFixed(2);
+  $('vRem').textContent   = d.rem!=null?d.rem:'--';
+  if($('sfxOn').checked){
+    const now=performance.now(), th=parseFloat($('clapTh').value)||8;
+    if(d.st==='BITE' && prev.st!=='BITE') play('scream');           // 咬人
+    if(d.ld>=th && prev.ld<th && now-lastClap>700){ lastClap=now; play('clap'); } // 拍手
+    if((d.an||0)>=99 && prev.an<99) play('anger');                  // 怒气满
+    if((d.pet||0)>=0.3 && prev.pet<0.3) play('purr');               // 摸头
+  }
+  prev={st:d.st, an:d.an||0, pet:d.pet||0, ld:d.ld||0};
+}
+// ---------- UI ----------
+const FXLIST=[['boot','开机音'],['scream','惨叫'],['clap','拍手回应'],['purr','摸头呼噜'],['anger','怒气警告'],['roar','吼叫']];
+$('fxGrid').innerHTML=FXLIST.map(([k,n])=>`<div class="cell"><b>${n}</b><small>${k}</small><button data-fx="${k}">试听</button></div>`).join('');
+$('fxGrid').addEventListener('click',e=>{ const b=e.target.closest('button'); if(b){ ac().resume(); play(b.dataset.fx); } });
+$('vol').oninput=()=>{ volScale=$('vol').value/100; $('volV').textContent=$('vol').value; };
+$('btnConnect').onclick=connect; $('btnDisconnect').onclick=disconnect;
+</script>
+</body>
+</html>
