@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小鲨调参台</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --ink: #1d2128; --muted: #6b7280; --line: #e3e6ea;
+  --accent: #2563eb; --accent-ink: #ffffff; --ok: #16a34a; --bad: #dc2626; --warn: #d97706;
+  --c-loud: #2563eb; --c-peak: #f59e0b; --c-rh: #0d9488; --c-base: #9ca3af;
+  --c-th1: #16a34a; --c-th2: #dc2626; --c-th3: #9333ea; --grid: #eef0f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --card: #181b21; --ink: #e6e8eb; --muted: #9aa1ab; --line: #2a2f37;
+    --accent: #3b82f6; --c-base: #6b7280; --grid: #22262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.dot.on { background: var(--ok); }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; padding: 14px 16px; max-width: 1400px; margin: 0 auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.wide { grid-column: 1 / -1; }
+button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.stat { background: var(--bg); border-radius: 8px; padding: 6px 9px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; }
+canvas { width: 100%; height: 170px; display: block; background: var(--bg); border-radius: 8px; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.param { display: grid; grid-template-columns: 1fr 76px; gap: 4px 8px; align-items: center; margin: 8px 0; }
+.param label { font-size: 13px; }
+.param label small { color: var(--muted); margin-left: 4px; }
+.param input[type=range] { grid-column: 1 / -1; width: 100%; }
+.param input[type=number] { width: 76px; }
+input[type=number], input[type=text] { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.anger { height: 14px; border-radius: 7px; background: linear-gradient(90deg, #2563eb, #06b6d4, #22c55e, #eab308, #f97316, #dc2626); position: relative; }
+.anger i { position: absolute; top: -4px; width: 4px; height: 22px; background: var(--ink); border-radius: 2px; transform: translateX(-2px); }
+#log { height: 180px; overflow: auto; background: var(--bg); border-radius: 8px; padding: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; margin: 0; }
+.hint { color: var(--muted); font-size: 12px; margin: 4px 0; }
+.badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--bg); color: var(--muted); font-weight: normal; }
+.badge.dirty { background: var(--warn); color: #fff; }
+.hold { user-select: none; touch-action: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>小鲨调参台</h1>
+  <span class="dot" id="dot"></span><span id="conn">未连接</span>
+  <button class="primary" id="btnConnect">连接 ESP32</button>
+  <button id="btnDisconnect" disabled>断开</button>
+  <span class="hint" id="support"></span>
+</header>
+
+<main>
+  <section class="card wide">
+    <h2>实时状态 <span class="badge" id="state">--</span></h2>
+    <div class="anger"><i id="angerMark" style="left:35%"></i></div>
+    <div class="row" style="justify-content:space-between"><span class="hint">怒气 0</span><span class="hint">100</span></div>
+    <div class="stats">
+      <div class="stat"><b id="vAnger">--</b><span>怒气</span></div>
+      <div class="stat"><b id="vFake">--</b><span>假咬概率</span></div>
+      <div class="stat"><b id="vHand">--</b><span>嘴里有手</span></div>
+      <div class="stat"><b id="vRem">--</b><span>剩余牙</span></div>
+      <div class="stat"><b id="vJaw">--</b><span>电机</span></div>
+      <div class="stat"><b id="vMods">--</b><span>按键/温湿度/麦克</span></div>
+    </div>
+    <div class="row">
+      <button id="btnLock">锁定怒气</button>
+      <span class="hint">设怒气</span><input type="number" id="angerSet" value="35" min="0" max="100" style="width:64px">
+      <button data-cmd-from="angerSet">设置</button>
+      <button data-cmd="r">重开一局</button>
+      <button data-cmd="h1">假装有手</button><button data-cmd="ha">用红外</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>麦克风 <span class="badge">比底噪高多少 dB</span></h2>
+    <canvas id="micChart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c-loud)"></i>平滑音量</span>
+      <span><i style="background:var(--c-peak)"></i>峰值</span>
+      <span><i style="background:var(--c-th1)"></i>开始生气</span>
+      <span><i style="background:var(--c-th2)"></i>生气最快</span>
+      <span><i style="background:var(--c-th3)"></i>拍手</span>
+    </div>
+    <div class="stats" style="margin-top:8px">
+      <div class="stat"><b id="vLevel">--</b><span>平滑音量 dB</span></div>
+      <div class="stat"><b id="vFloor">--</b><span>底噪 dB</span></div>
+      <div class="stat"><b id="vLoud">--</b><span>高出 dB</span></div>
+      <div class="stat"><b id="vPeakMax">--</b><span>10 秒最大峰值</span></div>
+    </div>
+    <div class="row">
+      <button id="btnQuiet">安静时点：设为安静基线</button>
+      <button id="btnClap">拍几下后点：设拍手阈值</button>
+    </div>
+    <p class="hint">安静基线 = 最近 10 秒平滑音量的中位数。拍手阈值 = 最近 10 秒最大峰值的 70%。点完会立即生效，满意再点"保存"。</p>
+    <div id="grp-麦克风"></div>
+  </section>
+
+  <section class="card">
+    <h2>湿度（摸头） <span class="badge" id="vTemp">--℃</span></h2>
+    <canvas id="rhChart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c-rh)"></i>湿度</span>
+      <span><i style="background:var(--c-base)"></i>基线</span>
+      <span><i style="background:var(--c-th1)"></i>开始算摸头</span>
+      <span><i style="background:var(--c-th2)"></i>摸满</span>
+    </div>
+    <div class="stats" style="margin-top:8px">
+      <div class="stat"><b id="vRh">--</b><span>湿度 %</span></div>
+      <div class="stat"><b id="vBase">--</b><span>基线 %</span></div>
+      <div class="stat"><b id="vRise">--</b><span>高出 %</span></div>
+      <div class="stat"><b id="vPet">--</b><span>摸头程度</span></div>
+    </div>
+    <p class="hint">手捂住传感器，看湿度什么时候越过绿线和红线。基线会在约 1 分钟内跟上环境湿度。</p>
+    <div id="grp-湿度"></div>
+  </section>
+
+  <section class="card">
+    <h2>电机</h2>
+    <div class="row">
+      <button class="primary" data-cmd="jc">咬一次</button>
+      <button class="primary" data-cmd="jo">抬头</button>
+      <button data-cmd="jt">假咬</button>
+    </div>
+    <div class="row">
+      <span class="hint">手动转动速度</span>
+      <input type="range" id="runSpeed" min="10" max="100" step="5" value="60" style="flex:1">
+      <b id="runSpeedV">60%</b>
+    </div>
+    <div class="row">
+      <button class="hold" id="holdFwd">按住：合嘴方向</button>
+      <button class="hold" id="holdRev">按住：张嘴方向</button>
+      <button class="danger" data-cmd="jstop">停止</button>
+    </div>
+    <div class="row">
+      <span class="hint">小步</span><input type="number" id="stepMs" value="30" min="5" max="500" style="width:64px"><span class="hint">ms</span>
+      <button id="stepFwd">合一步</button><button id="stepRev">张一步</button>
+      <button data-cmd="jzero">累计清零</button>
+      <span class="hint">累计 <b id="vCal">0</b> ms</span>
+    </div>
+    <p class="hint">按住按钮电机一直转，松开就刹车。小步按"真咬速度"转，累计时长可以直接填到"咬合转动时长"。</p>
+    <div id="grp-电机"></div>
+  </section>
+
+  <section class="card">
+    <h2>怒气和假咬 <span class="badge" id="fakeNow">--</span></h2>
+    <p class="hint">怒气在两条线之间时，按安全牙假咬的概率从 0% 线性涨到 100%。</p>
+    <div id="grp-怒气"></div>
+  </section>
+
+  <section class="card">
+    <h2>参数 <span class="badge" id="dirty">已保存</span></h2>
+    <p class="hint">拖动滑块会立即发给 ESP32，马上生效。点"保存"后写进闪存，重启也不丢。"恢复默认"会回到 config.h 里的值。</p>
+    <div class="row">
+      <button class="primary" id="btnSave">保存</button>
+      <button id="btnDefaults">恢复默认</button>
+      <button data-cmd="params">重新读取</button>
+    </div>
+    <div id="grp-other"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>串口日志 <span class="row" style="margin:0"><label class="hint"><input type="checkbox" id="showTele"> 显示实时数据行</label><button id="btnClear">清空</button></span></h2>
+    <pre id="log"></pre>
+    <div class="row">
+      <input type="text" id="cmdInput" placeholder="输入命令，例如 s、t6、jms100，回车发送" style="flex:1">
+      <button id="btnSend">发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const params = {};            // key -> {k,n,v,d,min,max,st,g,l}
+const hist = [];              // 最近 20 秒的实时数据
+const HIST_MAX = 200;
+let port = null, writer = null, reader = null, locked = false, dirty = false, closing = false;
+
+if (!('serial' in navigator)) {
+  $('support').textContent = '这个浏览器不支持 Web Serial，请用 Chrome 或 Edge 打开';
+  $('btnConnect').disabled = true;
+}
+
+// ---------- 串口 ----------
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) { log('连接失败：' + e.message); port = null; return; }
+  closing = false;
+  writer = port.writable.getWriter();
+  setConn(true);
+  readLoop();
+  setTimeout(init, 300);
+}
+async function init() { await send('log off'); await send('tele on'); await send('params'); }
+async function disconnect() {
+  if (closing) return;
+  closing = true;                                    // 先置标志，读循环就不会再重新拿 reader
+  try { await send('tele off'); await send('log all'); } catch (e) {}
+  try { reader && await reader.cancel(); } catch (e) {}
+  await new Promise(r => setTimeout(r, 50));
+  try { writer && writer.releaseLock(); } catch (e) {}
+  try { port && await port.close(); } catch (e) {}
+  port = writer = reader = null;
+  setConn(false);
+}
+function setConn(on) {
+  $('dot').classList.toggle('on', on);
+  $('conn').textContent = on ? '已连接' : '未连接';
+  $('btnConnect').disabled = on || !('serial' in navigator);
+  $('btnDisconnect').disabled = !on;
+}
+async function send(cmd) {
+  if (!writer) { log('还没连接 ESP32'); return; }
+  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  if (!cmd.startsWith('set ') && !cmd.startsWith('tele') && cmd !== 'params' && cmd !== 'log off') log('> ' + cmd);
+}
+async function readLoop() {
+  const dec = new TextDecoder();
+  let buf = '';
+  while (port && port.readable && !closing) {
+    reader = port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i).replace(/\r$/, '')); buf = buf.slice(i + 1); }
+      }
+    } catch (e) { log('串口断开：' + e.message); break; }
+    finally { reader.releaseLock(); }
+  }
+  if (port && !closing) disconnect();
+}
+
+function onLine(line) {
+  if (line.startsWith('[T] ')) {
+    try { onTele(JSON.parse(line.slice(4))); } catch (e) {}
+    if ($('showTele').checked) log(line);
+    return;
+  }
+  if (line.startsWith('[P] {')) {
+    try { onParam(JSON.parse(line.slice(4))); } catch (e) {}
+    return;
+  }
+  if (line.startsWith('[P] end')) return;
+  if (line.includes('===== 暴躁小鲨')) setTimeout(init, 1500);      // ESP32 重启了，重新打开实时数据
+  if (line.startsWith('[saved]')) setDirty(false);
+  log(line);
+}
+
+// ---------- 实时数据 ----------
+function onTele(d) {
+  d.time = performance.now();
+  hist.push(d); if (hist.length > HIST_MAX) hist.shift();
+  locked = !!d.lk;
+  $('btnLock').textContent = locked ? '解锁怒气' : '锁定怒气';
+  $('state').textContent = d.st + (d.lk ? ' · 怒气已锁' : '');
+  $('angerMark').style.left = Math.max(0, Math.min(100, d.an)) + '%';
+  $('vAnger').textContent = d.an.toFixed(0);
+  $('vFake').textContent = Math.round(d.fk * 100) + '%';
+  $('fakeNow').textContent = '现在假咬概率 ' + Math.round(d.fk * 100) + '%';
+  $('vHand').textContent = d.hand ? '有' : '无';
+  $('vRem').textContent = d.rem;
+  $('vJaw').textContent = d.jaw;
+  $('vMods').textContent = [d.key, d.th, d.mic].map(x => x ? '✓' : '✗').join(' ');
+  $('vLevel').textContent = d.lv.toFixed(1);
+  $('vFloor').textContent = d.fl.toFixed(1);
+  $('vLoud').textContent = d.ld.toFixed(1);
+  $('vPeakMax').textContent = recent(10).reduce((m, x) => Math.max(m, x.pk), 0).toFixed(1);
+  $('vTemp').textContent = isFinite(d.T) ? d.T.toFixed(1) + '℃' : '--℃';
+  $('vRh').textContent = fmt(d.rh); $('vBase').textContent = fmt(d.br);
+  $('vRise').textContent = isFinite(d.rh - d.br) ? (d.rh - d.br).toFixed(1) : '--';
+  $('vPet').textContent = d.pet.toFixed(2);
+  $('vCal').textContent = d.cal;
+  scheduleDraw();
+}
+const fmt = v => (v === null || !isFinite(v)) ? '--' : v.toFixed(1);
+function recent(sec) { const t = performance.now() - sec * 1000; return hist.filter(x => x.time >= t); }
+const pv = k => params[k] ? params[k].v : NaN;
+
+// ---------- 曲线 ----------
+let drawPending = false;
+function scheduleDraw() { if (!drawPending) { drawPending = true; requestAnimationFrame(() => { drawPending = false; drawAll(); }); } }
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function chart(canvas, series, lines, yMin, yMax) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const L = 34, R = 6, T = 6, B = 16, pw = w - L - R, ph = h - T - B;
+  const y = v => T + ph * (1 - (v - yMin) / (yMax - yMin));
+  g.font = '11px sans-serif'; g.fillStyle = css('--muted'); g.strokeStyle = css('--grid'); g.lineWidth = 1;
+  const step = niceStep((yMax - yMin) / 4);
+  for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
+    g.beginPath(); g.moveTo(L, y(v)); g.lineTo(w - R, y(v)); g.stroke();
+    g.fillText(+v.toFixed(1), 2, y(v) + 4);
+  }
+  g.fillText('20 秒', L, h - 3); g.fillText('现在', w - R - 24, h - 3);
+  for (const ln of lines) {
+    if (!isFinite(ln.v)) continue;
+    g.strokeStyle = css(ln.c); g.setLineDash([5, 4]); g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(L, y(ln.v)); g.lineTo(w - R, y(ln.v)); g.stroke();
+  }
+  g.setLineDash([]);
+  const now = performance.now();
+  for (const s of series) {
+    g.strokeStyle = css(s.c); g.lineWidth = s.w || 2; g.beginPath();
+    let started = false;
+    for (const d of hist) {
+      const v = s.f(d); if (!isFinite(v)) { started = false; continue; }
+      const xx = L + pw * (1 - (now - d.time) / 20000), yy = y(Math.max(yMin, Math.min(yMax, v)));
+      if (!started) { g.moveTo(xx, yy); started = true; } else g.lineTo(xx, yy);
+    }
+    g.stroke();
+  }
+}
+function niceStep(x) { const p = Math.pow(10, Math.floor(Math.log10(x))); const n = x / p; return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p; }
+function drawAll() {
+  const top = Math.max(20, pv('cld') * 1.3 || 30, ...recent(20).map(d => d.pk * 1.1));
+  chart($('micChart'), [{ f: d => d.pk, c: '--c-peak', w: 1.2 }, { f: d => d.ld, c: '--c-loud' }],
+        [{ v: pv('nsd'), c: '--c-th1' }, { v: pv('nfd'), c: '--c-th2' }, { v: pv('cld'), c: '--c-th3' }], 0, top);
+  const last = hist[hist.length - 1];
+  const rhs = hist.flatMap(d => [d.rh, d.br]).filter(isFinite);
+  let lo = rhs.length ? Math.min(...rhs) - 3 : 0, hi = rhs.length ? Math.max(...rhs) + 3 : 100;
+  if (last && isFinite(last.br)) hi = Math.max(hi, last.br + pv('prf') + 3);
+  chart($('rhChart'), [{ f: d => d.br, c: '--c-base', w: 1.5 }, { f: d => d.rh, c: '--c-rh' }],
+        last ? [{ v: last.br + pv('prs'), c: '--c-th1' }, { v: last.br + pv('prf'), c: '--c-th2' }] : [], lo, hi);
+}
+window.addEventListener('resize', scheduleDraw);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', scheduleDraw);
+
+// ---------- 参数 ----------
+const timers = {};
+function onParam(p) {
+  const first = !params[p.k];
+  params[p.k] = p;
+  if (first) buildParam(p);
+  const box = document.querySelector(`[data-param="${p.k}"]`);
+  if (box && document.activeElement !== box.querySelector('input[type=number]')) {
+    box.querySelector('input[type=range]').value = p.v;
+    box.querySelector('input[type=number]').value = p.v;
+  }
+  scheduleDraw();
+}
+function buildParam(p) {
+  const host = $('grp-' + p.g) || $('grp-other');
+  const div = document.createElement('div');
+  div.className = 'param'; div.dataset.param = p.k;
+  div.innerHTML = `<label>${p.l}<small>默认 ${p.d}</small></label>
+    <input type="number" min="${p.min}" max="${p.max}" step="${p.st}" value="${p.v}">
+    <input type="range" min="${p.min}" max="${p.max}" step="${p.st}" value="${p.v}">`;
+  const [num, rng] = div.querySelectorAll('input');
+  const push = v => {
+    rng.value = num.value = v;
+    clearTimeout(timers[p.k]);
+    timers[p.k] = setTimeout(() => { send(`set ${p.k} ${v}`); setDirty(true); }, 120);
+  };
+  rng.addEventListener('input', () => push(rng.value));
+  num.addEventListener('change', () => push(num.value));
+  host.appendChild(div);
+}
+function setDirty(d) { dirty = d; $('dirty').textContent = d ? '未保存' : '已保存'; $('dirty').classList.toggle('dirty', d); }
+function setParam(k, v) {
+  const p = params[k]; if (!p) return;
+  v = Math.min(p.max, Math.max(p.min, Math.round(v / p.st) * p.st));
+  v = +v.toFixed(2);
+  send(`set ${k} ${v}`); setDirty(true);
+}
+
+// ---------- 一键标定 ----------
+$('btnQuiet').onclick = () => {
+  const xs = recent(10).map(d => d.lv).filter(isFinite).sort((a, b) => a - b);
+  if (xs.length < 20) { log('数据太少，连接后至少等 2 秒再点'); return; }
+  const med = xs[Math.floor(xs.length / 2)];
+  log(`安静基线：最近 10 秒平滑音量中位数 ${med.toFixed(1)} dB`);
+  setParam('mqd', med);
+};
+$('btnClap').onclick = () => {
+  const pk = recent(10).reduce((m, d) => Math.max(m, d.pk), 0);
+  if (pk < 5) { log('最近 10 秒没有明显的峰值，先拍几下手再点'); return; }
+  log(`拍手阈值：最近 10 秒最大峰值 ${pk.toFixed(1)} dB × 70% = ${(pk * 0.7).toFixed(1)} dB`);
+  setParam('cld', pk * 0.7);
+};
+
+// ---------- 电机 ----------
+$('runSpeed').oninput = () => $('runSpeedV').textContent = $('runSpeed').value + '%';
+function hold(btn, sign) {
+  let on = false;
+  const start = e => { e.preventDefault(); on = true; btn.setPointerCapture && btn.setPointerCapture(e.pointerId); holding++; send('jrun' + sign * $('runSpeed').value); };
+  const stop = () => { if (on) { on = false; holding = Math.max(0, holding - 1); send('jstop'); } };
+  btn.addEventListener('pointerdown', start);
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointercancel', stop);
+  btn.addEventListener('lostpointercapture', stop);
+}
+hold($('holdFwd'), 1); hold($('holdRev'), -1);
+let holding = 0;
+window.addEventListener('blur', () => { if (writer && holding) { holding = 0; send('jstop'); } });   // 只在按住转动时才停，不打断抬头
+$('stepFwd').onclick = () => send('jf' + $('stepMs').value);
+$('stepRev').onclick = () => send('jb' + $('stepMs').value);
+
+// ---------- 其他按钮 ----------
+document.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.cmd) send(b.dataset.cmd);
+  if (b.dataset.cmdFrom) send('a' + $(b.dataset.cmdFrom).value);
+});
+$('btnLock').onclick = () => send(locked ? 'unlock' : 'lock');
+$('btnSave').onclick = () => send('save');
+$('btnDefaults').onclick = () => { if (confirm('恢复成 config.h 里的默认值？已保存的调参会被清掉。')) send('defaults'); };
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = disconnect;
+$('btnClear').onclick = () => $('log').textContent = '';
+const sendInput = () => { const v = $('cmdInput').value.trim(); if (v) { send(v); $('cmdInput').value = ''; } };
+$('btnSend').onclick = sendInput;
+$('cmdInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendInput(); });
+
+function log(s) {
+  const el = $('log');
+  el.textContent += s + '\n';
+  if (el.textContent.length > 40000) el.textContent = el.textContent.slice(-30000);
+  el.scrollTop = el.scrollHeight;
+}
+drawAll();
+</script>
+<script src="tuner-sfx.js"></script>
+</body>
+</html>
